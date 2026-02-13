@@ -1,0 +1,24 @@
+[project]
+name = "paamindelse-om-alderssnit"
+version = "0.1.0"
+description = "Påminder sagsbehandlere om alderssnit (15.5, 17, 17.5, 18, 30 år) ved at oprette opgaver i KMD Nexus"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "python-dateutil>=2.9",
+    "kmd-nexus-client",
+    "odk-tools",
+    "automation-server-client",
+    "nexus-database-client",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.9",
+]
+
+[tool.uv.sources]
+kmd-nexus-client = { git = "https://github.com/odense-rpa/nexus-client" }
+automation-server-client = { git = "https://github.com/odense-rpa/automation-server-client" }
+odk-tools = { git = "https://github.com/odense-rpa/odk-tools" }
+nexus-database-client = { git = "https://github.com/odense-rpa/nexus-database-client.git" }
