@@ -7,7 +7,6 @@ and creates reminder tasks in KMD Nexus for their case workers.
 import asyncio
 import logging
 import sys
-from typing import List
 
 from automation_server_client import (
     AutomationServer,
@@ -20,6 +19,7 @@ from kmd_nexus_client import NexusClientManager
 from kmd_nexus_client.tree_helpers import filter_by_path
 from nexus_database_client import NexusDatabaseClient
 from odk_tools.tracking import Tracker
+from odk_tools.reporting import report
 
 from opgave_handlinger import (
     opret_opgave_på_indsats,
@@ -78,26 +78,21 @@ async def process_workqueue(workqueue):
                 borger = nexus.borgere.hent_borger(cpr)
 
                 if not borger:
-                    raise WorkItemError("Borger ikke fundet")
+                    raise Exception("Borger ikke fundet")
 
-                visning = nexus.borgere.hent_visning(borger) or {}
-                referencer = nexus.borgere.hent_referencer(visning) or {}
-
+                visning = nexus.borgere.hent_visning(borger)
+                referencer = nexus.borgere.hent_referencer(visning)
                 borgers_organisationer =nexus.organisationer.hent_organisationer_for_borger(borger)
 
                 # Find responsible worker and organization
-                ansvarlig_medarbejder, ansvarlig_org = _find_organisation(                    
-                    referencer,
-                )
-
-                if ansvarlig_medarbejder is None or ansvarlig_org is None:
-                    # Report
-                    raise WorkItemError("Ansvarlig medarbejder eller organisation ikke fundet")
+                result = _find_organisation(referencer)
+                if not result:
+                    raise Exception("Ansvarlig medarbejder eller organisation ikke fundet")
+                ansvarlig_medarbejder, ansvarlig_org = result
 
                 # Dispatch based on age group
                 if alderssnit == "17.5":
-                    opret_opgave_på_indsats(
-                        borger,
+                    opret_opgave_på_indsats(                        
                         fødselsdato,
                         referencer,
                         ansvarlig_medarbejder,
@@ -105,16 +100,20 @@ async def process_workqueue(workqueue):
                         alderssnit="17.5",
                     )
                 elif alderssnit == "18":
-                    opret_opgave_på_indsats(
-                        borger,
+                    opret_opgave_på_indsats(                        
                         fødselsdato,
                         referencer,
                         ansvarlig_medarbejder,
                         ansvarlig_org,
                         alderssnit="18",
                     )
-                    opret_opgave_på_indsats_fsiii(
-                        borger,
+                    # Hent godkendte organisationer for FSIII medarbejders forløb
+                    result = _find_organisation(referencer, unge=False)
+                    if not result:
+                        raise Exception("Ansvarlig medarbejder ift. Hjælpemiddelservice ikke fundet")
+                    ansvarlig_medarbejder, ansvarlig_org = result
+
+                    opret_opgave_på_indsats_fsiii(                        
                         fødselsdato,
                         referencer,
                         borgers_organisationer,
@@ -141,7 +140,22 @@ async def process_workqueue(workqueue):
 
                 tracker.track_task(PROCESS_NAME)
 
-            except WorkItemError as e:
+            except Exception as e:
+                if alderssnit == "30":
+                    report(
+                        #report id
+                        "asd",
+                        "Voksne",
+                        {"Cpr": data.get("Cpr", ""), "Manuel årsag": str(e)},
+                    )
+                else:
+                    report(
+                        #report id
+                        "asd",
+                        "Unge",
+                        {"Cpr": data.get("Cpr", ""), "Manuel årsag": str(e)},
+                    )
+                # Report
                 logger.error(f"Fejl ved behandling af {data.get('Cpr', '?')}: {e}")
                 item.fail(str(e))
 
@@ -150,7 +164,7 @@ async def process_workqueue(workqueue):
 # Organization resolution
 # ---------------------------------------------------------------------------
 
-GODKENDTE_ORGANISATIONER = [
+GODKENDTE_ORGANISATIONER_UNGE = [
     "Ungerådgivningen 1",
     "Ungerådgivningen 2",
     "Ungerådgivningen 3",
@@ -159,12 +173,19 @@ GODKENDTE_ORGANISATIONER = [
     "Ungerådgivningen Social 1 - Vagt & Visitation",
 ]
 
+GODKENDTE_ORGANISATIONER_VOKSNE = [
+    "Social og Jobrådgivningen",
+    "Specialenheden",
+    "Voksenrådgivningen"
+]
+
 GRUNDFORLØB_MEDARBEJDER_FILTER = "/Børn og Unge Grundforløb/professionalReference"
 FORLØB_MEDARBEJDER_FILTER = "/Børn og Unge Grundforløb/*/professionalReference"
 
 
 def _find_organisation(    
     referencer,
+    unge=True
 ) -> tuple[dict, dict]|None:
     """Find the responsible worker and their approved organization.
 
@@ -195,7 +216,7 @@ def _find_organisation(
             if value and isinstance(value, str) and value.strip():
                 primary_org_name = value.strip()
                 break
-    if primary_org_name and primary_org_name in GODKENDTE_ORGANISATIONER:
+    if primary_org_name and primary_org_name in (GODKENDTE_ORGANISATIONER_UNGE if unge else GODKENDTE_ORGANISATIONER_VOKSNE):
         organisation = nexus.organisationer.hent_organisation_ved_navn(primary_org_name)
         return bruger, organisation
     return None

@@ -13,7 +13,6 @@ from datetime import date, datetime
 from automation_server_client import WorkItemError
 from dateutil.relativedelta import relativedelta
 from kmd_nexus_client.tree_helpers import filter_by_path
-from odk_tools.reporting import report
 
 logger = logging.getLogger(__name__)
 
@@ -50,13 +49,11 @@ BU_INDSATS_FILTER = (
 )
 
 
-def opret_opgave_på_indsats(
-    borger: dict,
+def opret_opgave_på_indsats(    
     fødselsdato: datetime,
     referencer,  # MWIN: Datatypen fra nexus objektet er helt i skoven....
     ansvarlig_medarbejder: dict,
-    ansvarlig_org: dict,
-    *,
+    ansvarlig_org: dict,    
     alderssnit: str,
 ):
     """Create task on BU grant for 17.5 or 18 year age milestone.
@@ -67,10 +64,8 @@ def opret_opgave_på_indsats(
     nexus = _get_nexus()
     titel, month_offset = INDSATS_CONFIG[alderssnit]
     opgavefrist = fødselsdato + relativedelta(months=month_offset)
-
     indsats_refs = filter_by_path(referencer, BU_INDSATS_FILTER)
-
-    created = False
+    
     for ref in indsats_refs:
         indsats, værdier = nexus.indsatser.hent_indsats(ref)
 
@@ -101,19 +96,7 @@ def opret_opgave_på_indsats(
             start_dato=date.today(),
             forfald_dato=opgavefrist,
         )
-        created = True
-
-        report(
-            PROCESS_NAME,
-            "Unge",
-            {"Cpr": borger.get("business_key", ""), "Opgave": titel},
-        )
-
-    if not created and indsats_refs:
-        logger.info(
-            f"Ingen nye {alderssnit}-opgaver oprettet for {borger.get('business_key', '')}"
-        )
-
+        return
 
 # ---------------------------------------------------------------------------
 # 18 — task on FSIII grant (Sundhedsfagligt grundforløb)
@@ -121,15 +104,13 @@ def opret_opgave_på_indsats(
 
 FSIII_INDSATS_FILTER = "/Sundhedsfagligt grundforløb/patientPathwayReference/Indsatser/basketGrantReference"
 
-
 def opret_opgave_på_indsats_fsiii(
-    borger: dict,
     fødselsdato: datetime,
     referencer,  # MWIN: Datatypen fra nexus objektet er helt i skoven....
     borgers_organisationer: list[dict],
     ansvarlig_medarbejder: dict,
     ansvarlig_org: dict,
-):
+):    
     """Create 18-year task on FSIII grant, if citizen is in Hjælpemiddelservice."""
     nexus = _get_nexus()
     titel = "Borger fylder 18 år"
@@ -144,7 +125,7 @@ def opret_opgave_på_indsats_fsiii(
 
     indsats_refs = filter_by_path(referencer, FSIII_INDSATS_FILTER)
     if not indsats_refs:
-        return
+        raise Exception("Ingen indsatser at placere opgave på ift. Hjælpemiddelservice")
 
     for ref in indsats_refs:
         indsats, _ = nexus.indsatser.hent_indsats(ref)
@@ -168,11 +149,7 @@ def opret_opgave_på_indsats_fsiii(
             forfald_dato=opgavefrist,
         )
 
-        report(
-            PROCESS_NAME,
-            "Unge",
-            {"Cpr": borger.get("business_key", ""), "Opgave": titel},
-        )
+        return
 
 
 # ---------------------------------------------------------------------------
@@ -184,8 +161,7 @@ def opret_opgave_på_skema(
     borger: dict,
     fødselsdato: datetime,
     ansvarlig_medarbejder: dict,
-    ansvarlig_org: dict,
-    *,
+    ansvarlig_org: dict,    
     alderssnit: str,
 ):
     """Create task on the 'Påmindelse om alderssnit' form for 15.5 or 17 year milestone.
@@ -253,12 +229,6 @@ def opret_opgave_på_skema(
         forfald_dato=opgavefrist,
     )
 
-    report(
-        PROCESS_NAME,
-        "Unge",
-        {"Cpr": borger.get("business_key", ""), "Opgave": titel},
-    )
-
 
 # ---------------------------------------------------------------------------
 # 30 — task on "Faglig vurdering og indstilling" / "Vurdering og formål" form
@@ -312,8 +282,3 @@ def opret_opgave_på_skema_30(
         forfald_dato=opgavefrist,
     )
 
-    report(
-        PROCESS_NAME,
-        "Unge",
-        {"Cpr": borger.get("business_key", ""), "Opgave": titel},
-    )
