@@ -54,8 +54,8 @@ def opret_opgave_på_indsats(
     borger: dict,
     fødselsdato: datetime,
     referencer,  # MWIN: Datatypen fra nexus objektet er helt i skoven....
-    ansvarlig_medarbejder: str,
-    ansvarlig_org: str,
+    ansvarlig_medarbejder: dict,
+    ansvarlig_org: dict,
     *,
     alderssnit: str,
 ):
@@ -96,7 +96,7 @@ def opret_opgave_på_indsats(
             objekt=indsats,
             opgave_type="BU - påmindelse om alderssnit",
             titel=titel,
-            ansvarlig_organisation=ansvarlig_org,
+            ansvarlig_organisation=ansvarlig_org.get("name", ""),
             ansvarlig_medarbejder=ansvarlig_medarbejder,
             start_dato=date.today(),
             forfald_dato=opgavefrist,
@@ -127,8 +127,8 @@ def opret_opgave_på_indsats_fsiii(
     fødselsdato: datetime,
     referencer,  # MWIN: Datatypen fra nexus objektet er helt i skoven....
     borgers_organisationer: list[dict],
-    ansvarlig_medarbejder: str,
-    ansvarlig_org: str,
+    ansvarlig_medarbejder: dict,
+    ansvarlig_org: dict,
 ):
     """Create 18-year task on FSIII grant, if citizen is in Hjælpemiddelservice."""
     nexus = _get_nexus()
@@ -160,12 +160,12 @@ def opret_opgave_på_indsats_fsiii(
 
         nexus.opgaver.opret_opgave(
             objekt=indsats,
-            opgavetype="BU - påmindelse om alderssnit",
+            opgave_type="BU - påmindelse om alderssnit",
             titel=titel,
-            ansvarlig_organisation=ansvarlig_org,
-            ansvarlig=ansvarlig_medarbejder,
-            startdato=date.today(),
-            opgavefrist=opgavefrist,
+            ansvarlig_organisation=ansvarlig_org.get("name", ""),
+            ansvarlig_medarbejder=ansvarlig_medarbejder,
+            start_dato=date.today(),
+            forfald_dato=opgavefrist,
         )
 
         report(
@@ -183,8 +183,8 @@ def opret_opgave_på_indsats_fsiii(
 def opret_opgave_på_skema(
     borger: dict,
     fødselsdato: datetime,
-    ansvarlig_medarbejder: str,
-    ansvarlig_org: str,
+    ansvarlig_medarbejder: dict,
+    ansvarlig_org: dict,
     *,
     alderssnit: str,
 ):
@@ -197,9 +197,9 @@ def opret_opgave_på_skema(
     opgavefrist = fødselsdato + relativedelta(months=month_offset)
 
     # Get citizen activities and find the reminder form
-    # TODO: MIWN, det her er også oldschool og skal laves om.
-    pathway = nexus.borgere.hent_pathway(borger)
-    aktiviteter = pathway.get("aktiviteter", [])
+    visning = nexus.borgere.hent_visning(borger)
+    aktiviteter = nexus.nexus_client.get(visning["_links"]["patientActivities"]["href"]).json()
+
     form_activities = [
         a for a in aktiviteter if a.get("patientActivityType") == "formData"
     ]
@@ -207,32 +207,32 @@ def opret_opgave_på_skema(
     skema = None
     for activity in form_activities:
         form_title = activity.get("formDefinition", {}).get("title", "")
-        if form_title == "Påmindelse om alderssnit":
-            # Fetch the full form data TODO: MIWN, underlig kode.
-            self_link = activity.get("_links", {}).get("self", "")
+        if form_title == "Påmindelse om alderssnit":            
+            self_link = activity.get("_links", {}).get("self", {}).get("href", "")
             if self_link:
-                skema = nexus.core.get(self_link)
+                skema = nexus.nexus_client.get(self_link).json()
             break
 
-    # Create the form if it doesn't exist
+    # Create the form if it doesn't exist    
     if skema is None:
-        nexus.skemaer.opret_skema(
+        nexus.skemaer.opret_komplet_skema(
             borger=borger,
-            skema="Påmindelse om alderssnit",
-            handling="Låst",
+            skematype_navn="Påmindelse om alderssnit",
+            handling_navn="Låst",
+            data={}
         )
         # Re-fetch activities to get the new form
-        pathway = nexus.borgere.hent_pathway(borger)
-        aktiviteter = pathway.get("aktiviteter", [])
+        visning = nexus.borgere.hent_visning(borger)
+        aktiviteter = nexus.nexus_client.get(visning["_links"]["patientActivities"]["href"]).json()
         form_activities = [
             a for a in aktiviteter if a.get("patientActivityType") == "formData"
         ]
         for activity in form_activities:
             form_title = activity.get("formDefinition", {}).get("title", "")
             if form_title == "Påmindelse om alderssnit":
-                self_link = activity.get("_links", {}).get("self", "")
+                self_link = activity.get("_links", {}).get("self", {}).get("href", "")
                 if self_link:
-                    skema = nexus.core.get(self_link)
+                    skema = nexus.nexus_client.get(self_link).json()
                 break
 
     if skema is None:
@@ -245,12 +245,12 @@ def opret_opgave_på_skema(
 
     nexus.opgaver.opret_opgave(
         objekt=skema,
-        opgavetype=opgavetype,
+        opgave_type=opgavetype,
         titel=titel,
-        ansvarlig_organisation=ansvarlig_org,
-        ansvarlig=ansvarlig_medarbejder,
-        startdato=date.today(),
-        opgavefrist=opgavefrist,
+        ansvarlig_organisation=ansvarlig_org.get("name", ""),
+        ansvarlig_medarbejder=ansvarlig_medarbejder,
+        start_dato=date.today(),
+        forfald_dato=opgavefrist,
     )
 
     report(
@@ -268,8 +268,8 @@ def opret_opgave_på_skema(
 def opret_opgave_på_skema_30(
     borger: dict,
     fødselsdato: datetime,
-    ansvarlig_medarbejder: str,
-    ansvarlig_org: str,
+    ansvarlig_medarbejder: dict,
+    ansvarlig_org: dict,
 ):
     """Create 30-year task on the newest 'Faglig vurdering' or 'Vurdering og formål' form."""
     nexus = _get_nexus()
@@ -278,7 +278,7 @@ def opret_opgave_på_skema_30(
     opgavetype = "Påmindelse om alderssnit - 30 år"
 
     # Get schema references for the citizen
-    skema_refs = nexus.skemaer.hent_skemaereferencer(borger)
+    skema_refs = nexus.skemaer.hent_skemareferencer(borger)
     if not skema_refs:
         return
 
@@ -295,7 +295,7 @@ def opret_opgave_på_skema_30(
 
     # Use the last (newest) match — BP reverses the collection
     relevante.reverse()
-    skema = nexus.skemaer.hent_skema(relevante[0])
+    skema = nexus.skemaer.hent_skema_fra_reference(relevante[0])
 
     # Duplicate check
     historik = nexus.opgaver.hent_opgave_historik(skema)
@@ -304,12 +304,12 @@ def opret_opgave_på_skema_30(
 
     nexus.opgaver.opret_opgave(
         objekt=skema,
-        opgavetype=opgavetype,
+        opgave_type=opgavetype,
         titel=titel,
-        ansvarlig_organisation=ansvarlig_org,
-        ansvarlig=ansvarlig_medarbejder,
-        startdato=date.today(),
-        opgavefrist=opgavefrist,
+        ansvarlig_organisation=ansvarlig_org.get("name", ""),
+        ansvarlig_medarbejder=ansvarlig_medarbejder,
+        start_dato=date.today(),
+        forfald_dato=opgavefrist,
     )
 
     report(

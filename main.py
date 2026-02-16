@@ -17,6 +17,7 @@ from automation_server_client import (
 )
 from dateutil.parser import parse as parse_date
 from kmd_nexus_client import NexusClientManager
+from kmd_nexus_client.tree_helpers import filter_by_path
 from nexus_database_client import NexusDatabaseClient
 from odk_tools.tracking import Tracker
 
@@ -52,7 +53,7 @@ def populate_queue(workqueue):
         logger.info(f"Fandt {len(borgere)} borgere til {alderssnit}-års alderssnit")
 
         for borger in borgere:
-            workqueue.add(
+            workqueue.add_item(
                 {
                     "Cpr": borger["Cpr"],
                     "Fødselsdato": borger["birth_date"],
@@ -82,14 +83,16 @@ async def process_workqueue(workqueue):
                 visning = nexus.borgere.hent_visning(borger) or {}
                 referencer = nexus.borgere.hent_referencer(visning) or {}
 
-                borgers_organisationer =nexus.organisationer.hent_organisationer_for_borger(borger);
+                borgers_organisationer =nexus.organisationer.hent_organisationer_for_borger(borger)
 
                 # Find responsible worker and organization
-                ansvarlig_medarbejder, ansvarlig_org = _find_organisation(
-                    borger,
-                    borgers_organisationer,
+                ansvarlig_medarbejder, ansvarlig_org = _find_organisation(                    
                     referencer,
                 )
+
+                if ansvarlig_medarbejder is None or ansvarlig_org is None:
+                    # Report
+                    raise WorkItemError("Ansvarlig medarbejder eller organisation ikke fundet")
 
                 # Dispatch based on age group
                 if alderssnit == "17.5":
@@ -148,22 +151,21 @@ async def process_workqueue(workqueue):
 # ---------------------------------------------------------------------------
 
 GODKENDTE_ORGANISATIONER = [
-    "Ungerådgivningen 1\n",
-    "Ungerådgivningen 2\n",
+    "Ungerådgivningen 1",
+    "Ungerådgivningen 2",
     "Ungerådgivningen 3",
     "Ungerådgivningen Special - Kompensation",
     "Familierådgivningen",
     "Ungerådgivningen Social 1 - Vagt & Visitation",
 ]
 
-MEDARBEJDER_FILTER = "/Børn og Unge Grundforløb/professionalReference"
+GRUNDFORLØB_MEDARBEJDER_FILTER = "/Børn og Unge Grundforløb/professionalReference"
+FORLØB_MEDARBEJDER_FILTER = "/Børn og Unge Grundforløb/*/professionalReference"
 
 
-def _find_organisation(
-    borger: dict,
-    borgers_organisationer: list[dict],
+def _find_organisation(    
     referencer,
-) -> tuple[str, str]:
+) -> tuple[dict, dict]|None:
     """Find the responsible worker and their approved organization.
 
     Mirrors the BP "Find fælles org" subsheet logic:
@@ -171,36 +173,32 @@ def _find_organisation(
     2. Look up the professional's organizations.
     3. Match against the approved organization list AND the citizen's orgs.
     """
-    from kmd_nexus_client.tree_helpers import filter_by_path
-
+    
     # Find professionals assigned to the citizen's BU pathway
-    medarbejder_refs = filter_by_path(referencer, MEDARBEJDER_FILTER)
+    medarbejder_refs = filter_by_path(referencer, GRUNDFORLØB_MEDARBEJDER_FILTER)    
 
     if not medarbejder_refs:
-        return "", ""
+        medarbejder_refs = filter_by_path(referencer, FORLØB_MEDARBEJDER_FILTER)
+        if not medarbejder_refs:
+            return None
 
-    # Use first matched professional
-    # MIWN - forskel imellem de to objekter - TODO: Implementer hent organisationer for bruger - hører til organisationsclient
+    # Use first matched professional    
     bruger = nexus.hent_fra_reference(medarbejder_refs[0])
-    medarbejders_organisationer = []
-    #bruger = nexus.organisationer.hent_bruger_via_reference(medarbejder_refs[0])
-    #medarbejders_organisationer = nexus.organisationer.hent_brugers_organisationer(
-    #    bruger
-    #)
-
+    
     # Find a common approved organization
-    for org_navn in GODKENDTE_ORGANISATIONER:
-        org_stripped = org_navn.strip()
-        medarbejder_match = any(
-            o.get("name") == org_stripped for o in medarbejders_organisationer
-        )
-        borger_match = any(
-            o.get("name") == org_stripped for o in borgers_organisationer
-        )
-        if medarbejder_match and borger_match:
-            return bruger.get("primaryIdentifier", ""), org_stripped
-
-    return "", ""
+    # bruger.get("additionalInfo") int indexed array get the value of this key: Primær organisation
+    additional_info = bruger.get("additionalInfo", [])
+    primary_org_name = None
+    for info in additional_info:
+        if info.get("key") == "Primær organisation":
+            value = info.get("value")
+            if value and isinstance(value, str) and value.strip():
+                primary_org_name = value.strip()
+                break
+    if primary_org_name and primary_org_name in GODKENDTE_ORGANISATIONER:
+        organisation = nexus.organisationer.hent_organisation_ved_navn(primary_org_name)
+        return bruger, organisation
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -227,11 +225,11 @@ if __name__ == "__main__":
     )
 
     db = NexusDatabaseClient(
-        host=db_cred.data.get("host", "195.50.52.160"),
-        port=int(db_cred.data.get("port", "2311")),
+        host=db_cred.data["hostname"],
+        port=int(db_cred.data["port"]),
         user=db_cred.username,
         password=db_cred.password,
-        database=db_cred.data.get("database", "odensekommune"),
+        database=db_cred.data["database_name"],
     )
 
     tracker = Tracker(tracking_cred.username, tracking_cred.password)
