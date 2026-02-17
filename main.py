@@ -10,8 +10,7 @@ import sys
 
 from automation_server_client import (
     AutomationServer,
-    Credential,
-    WorkItemError,
+    Credential,    
     WorkItemStatus,
 )
 from dateutil.parser import parse as parse_date
@@ -142,20 +141,17 @@ async def process_workqueue(workqueue):
 
             except Exception as e:
                 if alderssnit == "30":
-                    report(
-                        #report id
-                        "asd",
+                    report(                        
+                        "paamindelse_om_alderssnit",
                         "Voksne",
                         {"Cpr": data.get("Cpr", ""), "Manuel årsag": str(e)},
                     )
                 else:
-                    report(
-                        #report id
-                        "asd",
+                    report(                        
+                        "paamindelse_om_alderssnit",
                         "Unge",
                         {"Cpr": data.get("Cpr", ""), "Manuel årsag": str(e)},
-                    )
-                # Report
+                    )                
                 logger.error(f"Fejl ved behandling af {data.get('Cpr', '?')}: {e}")
                 item.fail(str(e))
 
