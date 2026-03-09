@@ -10,7 +10,7 @@ import sys
 
 from automation_server_client import (
     AutomationServer,
-    Credential,    
+    Credential,
     WorkItemStatus,
 )
 from dateutil.parser import parse as parse_date
@@ -19,22 +19,80 @@ from kmd_nexus_client.tree_helpers import filter_by_path
 from nexus_database_client import NexusDatabaseClient
 from odk_tools.tracking import Tracker
 from odk_tools.reporting import report
+from opgave_handlinger import OpgaveHandler
 
-from opgave_handlinger import (
-    opret_opgave_på_indsats,
-    opret_opgave_på_indsats_fsiii,
-    opret_opgave_på_skema,
-    opret_opgave_på_skema_30,
-)
 
-logger = logging.getLogger(__name__)
+GODKENDTE_ORGANISATIONER_UNGE = [
+    "Ungerådgivningen 1",
+    "Ungerådgivningen 2",
+    "Ungerådgivningen 3",
+    "Ungerådgivningen Special - Kompensation",
+    "Familierådgivningen",
+    "Ungerådgivningen Social 1 - Vagt & Visitation",
+]
 
-PROCESS_NAME = "Påmindelse om alderssnit"
+SYTTEN_AAR_ORGANISATIONER = ["Familierådgivningen"]
 
-# Module-level globals — initialized in __main__
+GODKENDTE_ORGANISATIONER_VOKSNE = [
+    "Social og Jobrådgivningen",
+    "Specialenheden",
+    "Voksenrådgivningen",
+]
+
+SKEMA_CONFIG = {
+    "15.5": ("Borger fylder 15.5 år", 192),
+    "17": ("Borger fylder 17 år", 210),
+    "17.5": ("Borger fylder 17½ år", 209),
+    "18": ("Borger fylder 18 år", 215),
+}
+
+GRUNDFORLØB_MEDARBEJDER_FILTER = "/Børn og Unge Grundforløb/professionalReference"
+FORLØB_MEDARBEJDER_FILTER = "/Børn og Unge Grundforløb/*/professionalReference"
+
+HJÆLPEMIDDEL_MEDARBEJDER_FILTER_1 = "/Ældre og sundhedsfagligt grundforløb/Sag Kropsbårne hjælpemidler - Børn og unge/professionalReference"
+HJÆLPEMIDDEL_MEDARBEJDER_FILTER_2 = "/Ældre og sundhedsfagligt grundforløb/Sag: Hjælpemidler, forbrugsgoder, boligindretning m.v. - Børn og unge/professionalReference"
+
 nexus: NexusClientManager
 db: NexusDatabaseClient
 tracker: Tracker
+opgave_handler: OpgaveHandler
+logger = logging.getLogger(__name__)
+
+
+def _find_organisation(
+    referencer, godkendte_organisationer: list[str], hjælpemidler=False
+) -> tuple[dict, dict] | None:    
+
+    if hjælpemidler:
+        medarbejder_refs = filter_by_path(referencer, HJÆLPEMIDDEL_MEDARBEJDER_FILTER_1)
+        if not medarbejder_refs:
+            medarbejder_refs = filter_by_path(
+                referencer, HJÆLPEMIDDEL_MEDARBEJDER_FILTER_2
+            )
+            if not medarbejder_refs:
+                return None
+    else:
+        medarbejder_refs = filter_by_path(referencer, GRUNDFORLØB_MEDARBEJDER_FILTER)
+
+        if not medarbejder_refs:
+            medarbejder_refs = filter_by_path(referencer, FORLØB_MEDARBEJDER_FILTER)
+            if not medarbejder_refs:
+                return None
+
+    bruger = nexus.hent_fra_reference(medarbejder_refs[0])
+
+    additional_info = bruger.get("additionalInfo", [])
+    primary_org_name = None
+    for info in additional_info:
+        if info.get("key") == "Primær organisation":
+            value = info.get("value")
+            if value and isinstance(value, str) and value.strip():
+                primary_org_name = value.strip()
+                break
+    if primary_org_name and primary_org_name in godkendte_organisationer:
+        organisation = nexus.organisationer.hent_organisation_ved_navn(primary_org_name)
+        return bruger, organisation
+    return None
 
 
 def populate_queue(workqueue):
@@ -72,8 +130,6 @@ async def process_workqueue(workqueue):
                 cpr = data["Cpr"]
                 fødselsdato = parse_date(data["Fødselsdato"], dayfirst=True)
                 alderssnit = data["Alderssnit"]
-
-                # Look up citizen and pathway in Nexus
                 borger = nexus.borgere.hent_borger(cpr)
 
                 if not borger:
@@ -81,146 +137,74 @@ async def process_workqueue(workqueue):
 
                 visning = nexus.borgere.hent_visning(borger)
                 referencer = nexus.borgere.hent_referencer(visning)
-                borgers_organisationer =nexus.organisationer.hent_organisationer_for_borger(borger)
 
-                # Find responsible worker and organization
-                result = _find_organisation(referencer)
+                if alderssnit == "17":
+                    godkendte_organisationer = SYTTEN_AAR_ORGANISATIONER
+                elif alderssnit == "30":
+                    godkendte_organisationer = GODKENDTE_ORGANISATIONER_VOKSNE
+                else:
+                    godkendte_organisationer = GODKENDTE_ORGANISATIONER_UNGE
+
+                result = _find_organisation(referencer, godkendte_organisationer)
                 if not result:
-                    raise Exception("Ansvarlig medarbejder eller organisation ikke fundet")
+                    raise Exception(
+                        "Ansvarlig medarbejder eller organisation ikke fundet"
+                    )
                 ansvarlig_medarbejder, ansvarlig_org = result
 
-                # Dispatch based on age group
-                if alderssnit == "17.5":
-                    opret_opgave_på_indsats(                        
-                        fødselsdato,
-                        referencer,
-                        ansvarlig_medarbejder,
-                        ansvarlig_org,
-                        alderssnit="17.5",
-                    )
-                elif alderssnit == "18":
-                    opret_opgave_på_indsats(                        
-                        fødselsdato,
-                        referencer,
-                        ansvarlig_medarbejder,
-                        ansvarlig_org,
-                        alderssnit="18",
-                    )
-                    # Hent godkendte organisationer for FSIII medarbejders forløb
-                    result = _find_organisation(referencer, unge=False)
-                    if not result:
-                        raise Exception("Ansvarlig medarbejder ift. Hjælpemiddelservice ikke fundet")
-                    ansvarlig_medarbejder, ansvarlig_org = result
-
-                    opret_opgave_på_indsats_fsiii(                        
-                        fødselsdato,
-                        referencer,
-                        borgers_organisationer,
-                        ansvarlig_medarbejder,
-                        ansvarlig_org,
-                    )
-
-                if alderssnit in ("15.5", "17"):
-                    opret_opgave_på_skema(
+                if alderssnit in ("15.5", "17", "17.5", "18"):
+                    opgave_handler.opret_opgave_på_skema(
                         borger,
                         fødselsdato,
                         ansvarlig_medarbejder,
                         ansvarlig_org,
                         alderssnit=alderssnit,
+                        titel=SKEMA_CONFIG[alderssnit][0],
+                        måneds_offset=SKEMA_CONFIG[alderssnit][1],
                     )
+                if alderssnit == "18":
+                    result = _find_organisation(
+                        referencer, godkendte_organisationer, hjælpemidler=True
+                    )
+                    if not result:
+                        raise Exception(
+                            "Ansvarlig medarbejder ift. Hjælpemiddelservice ikke fundet"
+                        )
+                    ansvarlig_medarbejder, ansvarlig_org = result
 
+                    opgave_handler.opret_opgave_på_skema(
+                        borger,
+                        fødselsdato,
+                        ansvarlig_medarbejder,
+                        ansvarlig_org,
+                        alderssnit=alderssnit,
+                        titel="Borger fylder 18 år - Hjælpemiddel",
+                        måneds_offset=SKEMA_CONFIG[alderssnit][1],
+                    )
                 if alderssnit == "30":
-                    opret_opgave_på_skema_30(
+                    opgave_handler.opret_opgave_på_skema_30(
                         borger,
                         fødselsdato,
                         ansvarlig_medarbejder,
                         ansvarlig_org,
                     )
 
-                tracker.track_task(PROCESS_NAME)
-
             except Exception as e:
                 if alderssnit == "30":
-                    report(                        
+                    report(
                         "paamindelse_om_alderssnit",
                         "Voksne",
                         {"Cpr": data.get("Cpr", ""), "Manuel årsag": str(e)},
                     )
                 else:
-                    report(                        
+                    report(
                         "paamindelse_om_alderssnit",
                         "Unge",
                         {"Cpr": data.get("Cpr", ""), "Manuel årsag": str(e)},
-                    )                
+                    )
                 logger.error(f"Fejl ved behandling af {data.get('Cpr', '?')}: {e}")
                 item.fail(str(e))
 
-
-# ---------------------------------------------------------------------------
-# Organization resolution
-# ---------------------------------------------------------------------------
-
-GODKENDTE_ORGANISATIONER_UNGE = [
-    "Ungerådgivningen 1",
-    "Ungerådgivningen 2",
-    "Ungerådgivningen 3",
-    "Ungerådgivningen Special - Kompensation",
-    "Familierådgivningen",
-    "Ungerådgivningen Social 1 - Vagt & Visitation",
-]
-
-GODKENDTE_ORGANISATIONER_VOKSNE = [
-    "Social og Jobrådgivningen",
-    "Specialenheden",
-    "Voksenrådgivningen"
-]
-
-GRUNDFORLØB_MEDARBEJDER_FILTER = "/Børn og Unge Grundforløb/professionalReference"
-FORLØB_MEDARBEJDER_FILTER = "/Børn og Unge Grundforløb/*/professionalReference"
-
-
-def _find_organisation(    
-    referencer,
-    unge=True
-) -> tuple[dict, dict]|None:
-    """Find the responsible worker and their approved organization.
-
-    Mirrors the BP "Find fælles org" subsheet logic:
-    1. Filter references to find the professional on the BU pathway.
-    2. Look up the professional's organizations.
-    3. Match against the approved organization list AND the citizen's orgs.
-    """
-    
-    # Find professionals assigned to the citizen's BU pathway
-    medarbejder_refs = filter_by_path(referencer, GRUNDFORLØB_MEDARBEJDER_FILTER)    
-
-    if not medarbejder_refs:
-        medarbejder_refs = filter_by_path(referencer, FORLØB_MEDARBEJDER_FILTER)
-        if not medarbejder_refs:
-            return None
-
-    # Use first matched professional    
-    bruger = nexus.hent_fra_reference(medarbejder_refs[0])
-    
-    # Find a common approved organization
-    # bruger.get("additionalInfo") int indexed array get the value of this key: Primær organisation
-    additional_info = bruger.get("additionalInfo", [])
-    primary_org_name = None
-    for info in additional_info:
-        if info.get("key") == "Primær organisation":
-            value = info.get("value")
-            if value and isinstance(value, str) and value.strip():
-                primary_org_name = value.strip()
-                break
-    if primary_org_name and primary_org_name in (GODKENDTE_ORGANISATIONER_UNGE if unge else GODKENDTE_ORGANISATIONER_VOKSNE):
-        organisation = nexus.organisationer.hent_organisation_ved_navn(primary_org_name)
-        return bruger, organisation
-    return None
-
-
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     logging.basicConfig(
@@ -250,6 +234,8 @@ if __name__ == "__main__":
     )
 
     tracker = Tracker(tracking_cred.username, tracking_cred.password)
+
+    opgave_handler = OpgaveHandler(nexus, tracker)
 
     if "--queue" in sys.argv:
         workqueue.clear_workqueue(WorkItemStatus.NEW)
