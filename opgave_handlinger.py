@@ -4,6 +4,7 @@ from datetime import date, datetime
 from automation_server_client import WorkItemError
 from dateutil.relativedelta import relativedelta
 from kmd_nexus_client import NexusClientManager
+from kmd_nexus_client.tree_helpers import filter_by_path
 from odk_tools.tracking import Tracker
 
 logger = logging.getLogger(__name__)
@@ -50,6 +51,7 @@ class OpgaveHandler:
                 handling_navn="Låst",
                 data={},
             )
+            self.tracker.track_partial_task(PROCESS_NAME)
             visning = self.nexus.borgere.hent_visning(borger)
             aktiviteter = self.nexus.nexus_client.get(
                 visning["_links"]["patientActivities"]["href"]
@@ -130,3 +132,48 @@ class OpgaveHandler:
             forfald_dato=opgavefrist,
         )
         self.tracker.track_partial_task(PROCESS_NAME)
+
+    def hent_indsater_paragraf_46_47(self, referencer: list) -> list:
+        """
+        Hent indsatser med paragraf 46 og 47 fra en liste af forløbsreferencer.
+
+        :param referencer: Liste af forløbsreferencer.
+        :return: Liste af indsatser med paragraf 46 og 47.
+        """
+        aktive_indsats_states = [
+            "Bestilt",
+            "Bevilliget",
+            "Anvist",
+            "Planlagt, ikke bestilt",
+            "Ændret", 
+            "Fremtidigt ændret", 
+            "Ansøgt", 
+            "Afgjort",
+            "Iværksat",
+            "Etableret"
+        ]
+
+        indsatser = []        
+
+        indsatsreferencer = filter_by_path(
+            referencer,
+            "/Børn og Unge Grundforløb/*/Indsatser/basketGrantReference",
+            active_pathways_only=True
+        )
+
+        indsatsreferencer = [indsats for indsats in indsatsreferencer if indsats.get("workflowState", {}).get("name") in aktive_indsats_states]
+
+
+        for indsatsreference in indsatsreferencer:
+            indsats = self.nexus.hent_fra_reference(indsatsreference)
+            værdier = self.nexus.indsatser.hent_indsats_elementer(indsats)
+
+            section = (
+                værdier.get("paragraph", {}).get("paragraph", {}).get("section", "")
+            )
+            if section not in ("§ 46", "§ 47"):
+                continue
+
+            indsatser.append(indsats)
+
+        return indsatser

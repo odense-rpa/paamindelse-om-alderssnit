@@ -1,9 +1,3 @@
-"""Påmindelse om alderssnit — reminds case workers about age milestones.
-
-Identifies citizens approaching 15.5, 17, 17.5, 18, or 30 years of age
-and creates reminder tasks in KMD Nexus for their case workers.
-"""
-
 import asyncio
 import logging
 import sys
@@ -52,22 +46,33 @@ FORLØB_MEDARBEJDER_FILTER = "/Børn og Unge Grundforløb/*/professionalReferenc
 HJÆLPEMIDDEL_MEDARBEJDER_FILTER_1 = "/Ældre og sundhedsfagligt grundforløb/Sag Kropsbårne hjælpemidler - Børn og unge/professionalReference"
 HJÆLPEMIDDEL_MEDARBEJDER_FILTER_2 = "/Ældre og sundhedsfagligt grundforløb/Sag: Hjælpemidler, forbrugsgoder, boligindretning m.v. - Børn og unge/professionalReference"
 
+SOCIALFAGLIGT_MEDARBEJDER_FILTER_1 = "/Socialfagligt grundforløb/professionalReference"
+SOCIALFAGLIGT_MEDARBEJDER_FILTER_2 = "/Socialfagligt grundforløb/*/professionalReference"
+
 nexus: NexusClientManager
-db: NexusDatabaseClient
+nexus_database: NexusDatabaseClient
 tracker: Tracker
 opgave_handler: OpgaveHandler
 logger = logging.getLogger(__name__)
 
 
 def _find_organisation(
-    referencer, godkendte_organisationer: list[str], hjælpemidler=False
+    referencer, godkendte_organisationer: list[str], type=""
 ) -> tuple[dict, dict] | None:    
-
-    if hjælpemidler:
+    
+    if type == "Hjælpemidler":
         medarbejder_refs = filter_by_path(referencer, HJÆLPEMIDDEL_MEDARBEJDER_FILTER_1)
         if not medarbejder_refs:
             medarbejder_refs = filter_by_path(
                 referencer, HJÆLPEMIDDEL_MEDARBEJDER_FILTER_2
+            )
+            if not medarbejder_refs:
+                return None
+    elif type == "30":
+        medarbejder_refs = filter_by_path(referencer, SOCIALFAGLIGT_MEDARBEJDER_FILTER_1)
+        if not medarbejder_refs:
+            medarbejder_refs = filter_by_path(
+                referencer, SOCIALFAGLIGT_MEDARBEJDER_FILTER_2
             )
             if not medarbejder_refs:
                 return None
@@ -80,6 +85,12 @@ def _find_organisation(
                 return None
 
     bruger = nexus.hent_fra_reference(medarbejder_refs[0])
+    medarbejder = nexus_database.hent_medarbejder_med_activity_id(
+        bruger.get("activityIdentifier", {}).get("activityId", "")
+    )
+    medarbejder = nexus.organisationer.hent_medarbejder_ved_initialer(
+        medarbejder[0].get("primary_identifier", "")
+    )
 
     additional_info = bruger.get("additionalInfo", [])
     primary_org_name = None
@@ -91,18 +102,18 @@ def _find_organisation(
                 break
     if primary_org_name and primary_org_name in godkendte_organisationer:
         organisation = nexus.organisationer.hent_organisation_ved_navn(primary_org_name)
-        return bruger, organisation
+        return medarbejder, organisation
     return None
 
 
 def populate_queue(workqueue):
     """Run 5 DB queries and add citizens to the work queue, tagged by age group."""
     queries = [
-        (db.hent_borgere_med_2_måneder_til_15_5, "15.5"),
-        (db.hent_borgere_med_2_måneder_til_17, "17"),
-        (db.hent_borgere_med_2_måneder_til_17_5, "17.5"),
-        (db.hent_borgere_med_2_måneder_til_18, "18"),
-        (db.hent_borgere_med_3_5_måneder_til_30, "30"),
+        (nexus_database.hent_borgere_med_2_måneder_til_15_5, "15.5"),
+        (nexus_database.hent_borgere_med_2_måneder_til_17, "17"),
+        (nexus_database.hent_borgere_med_2_måneder_til_17_5, "17.5"),
+        (nexus_database.hent_borgere_med_2_måneder_til_18, "18"),
+        (nexus_database.hent_borgere_med_3_5_måneder_til_30, "30"),
     ]
 
     for query_fn, alderssnit in queries:
@@ -145,39 +156,58 @@ async def process_workqueue(workqueue):
                 else:
                     godkendte_organisationer = GODKENDTE_ORGANISATIONER_UNGE
 
-                result = _find_organisation(referencer, godkendte_organisationer)
+                result = _find_organisation(referencer, godkendte_organisationer, type="30" if alderssnit=="30" else "")
                 if not result:
                     raise Exception(
                         "Ansvarlig medarbejder eller organisation ikke fundet"
                     )
                 ansvarlig_medarbejder, ansvarlig_org = result
 
-                if alderssnit in ("15.5", "17", "17.5", "18"):
+                if alderssnit in ("15.5", "17", "18"):
+                    # 18 årige, skal både have opgave på Børn og Unge grundforløb og Ældre og sundhedsfagligt grundforløb, hvis de har aktive udlån.
                     opgave_handler.opret_opgave_på_skema(
                         borger,
                         fødselsdato,
                         ansvarlig_medarbejder,
-                        ansvarlig_org,
-                        alderssnit=alderssnit,
+                        ansvarlig_org,                        
                         titel=SKEMA_CONFIG[alderssnit][0],
                         måneds_offset=SKEMA_CONFIG[alderssnit][1],
                     )
-                if alderssnit == "18":
-                    result = _find_organisation(
-                        referencer, godkendte_organisationer, hjælpemidler=True
-                    )
-                    if not result:
-                        raise Exception(
-                            "Ansvarlig medarbejder ift. Hjælpemiddelservice ikke fundet"
-                        )
-                    ansvarlig_medarbejder, ansvarlig_org = result
+                if alderssnit == "17.5":
+                    indsatser = opgave_handler.hent_indsater_paragraf_46_47(referencer)
+
+                    if len(indsatser) == 0:
+                        continue
 
                     opgave_handler.opret_opgave_på_skema(
                         borger,
                         fødselsdato,
                         ansvarlig_medarbejder,
-                        ansvarlig_org,
-                        alderssnit=alderssnit,
+                        ansvarlig_org,                        
+                        titel=SKEMA_CONFIG[alderssnit][0],
+                        måneds_offset=SKEMA_CONFIG[alderssnit][1],
+                    )
+                
+                if alderssnit == "18":
+                    udlån = nexus.borgere.hent_udlån(borger)
+
+                    if udlån is None or len(udlån) == 0:
+                        continue
+
+                    result = _find_organisation(
+                        referencer, godkendte_organisationer, type="Hjælpemidler"
+                    )
+                    if not result:
+                        raise Exception(
+                            "Ansvarlig medarbejder ift. Hjælpemiddelservice ikke fundet"
+                        )
+                    ansvarlig_medarbejder, ansvarlig_org = result                    
+
+                    opgave_handler.opret_opgave_på_skema(
+                        borger,
+                        fødselsdato,
+                        ansvarlig_medarbejder,
+                        ansvarlig_org,                        
                         titel="Borger fylder 18 år - Hjælpemiddel",
                         måneds_offset=SKEMA_CONFIG[alderssnit][1],
                     )
@@ -225,7 +255,7 @@ if __name__ == "__main__":
         client_secret=nexus_cred.password,
     )
 
-    db = NexusDatabaseClient(
+    nexus_database = NexusDatabaseClient(
         host=db_cred.data["hostname"],
         port=int(db_cred.data["port"]),
         user=db_cred.username,
@@ -240,8 +270,8 @@ if __name__ == "__main__":
     if "--queue" in sys.argv:
         workqueue.clear_workqueue(WorkItemStatus.NEW)
         populate_queue(workqueue)
-        db.close()
+        nexus_database.close()
         sys.exit(0)
 
     asyncio.run(process_workqueue(workqueue))
-    db.close()
+    nexus_database.close()
