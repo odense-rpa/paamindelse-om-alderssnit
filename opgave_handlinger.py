@@ -48,7 +48,7 @@ class OpgaveHandler:
             self.nexus.skemaer.opret_komplet_skema(
                 borger=borger,
                 skematype_navn="Påmindelse om alderssnit",
-                handling_navn="Låst",
+                handling_navn="Udfyldt",
                 data={},
             )
             self.tracker.track_partial_task(PROCESS_NAME)
