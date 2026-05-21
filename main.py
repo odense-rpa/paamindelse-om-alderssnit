@@ -155,15 +155,16 @@ async def process_workqueue(workqueue):
                     godkendte_organisationer = GODKENDTE_ORGANISATIONER_VOKSNE
                 else:
                     godkendte_organisationer = GODKENDTE_ORGANISATIONER_UNGE
-
-                result = _find_organisation(referencer, godkendte_organisationer, type="30" if alderssnit=="30" else "")
-                if not result:
-                    raise Exception(
-                        "Ansvarlig medarbejder eller organisation ikke fundet"
-                    )
-                ansvarlig_medarbejder, ansvarlig_org = result
+                
 
                 if alderssnit in ("15.5", "17", "18"):
+                    result = _find_organisation(referencer, godkendte_organisationer, type="30" if alderssnit=="30" else "")
+                    if not result:
+                        raise Exception(
+                            "Ansvarlig medarbejder eller organisation ikke fundet"
+                        )
+                    ansvarlig_medarbejder, ansvarlig_org = result
+
                     # 18 årige, skal både have opgave på Børn og Unge grundforløb og Ældre og sundhedsfagligt grundforløb, hvis de har aktive udlån.
                     opgave_handler.opret_opgave_på_skema(
                         borger,
@@ -178,6 +179,13 @@ async def process_workqueue(workqueue):
 
                     if len(indsatser) == 0:
                         continue
+
+                    result = _find_organisation(referencer, godkendte_organisationer, type="")
+                    if not result:
+                        raise Exception(
+                            "Ansvarlig medarbejder eller organisation ikke fundet"
+                        )
+                    ansvarlig_medarbejder, ansvarlig_org = result
 
                     opgave_handler.opret_opgave_på_skema(
                         borger,
@@ -212,6 +220,13 @@ async def process_workqueue(workqueue):
                         måneds_offset=SKEMA_CONFIG[alderssnit][1],
                     )
                 if alderssnit == "30":
+                    result = _find_organisation(referencer, godkendte_organisationer, type="30")
+                    if not result:
+                        raise Exception(
+                            "Ansvarlig medarbejder eller organisation ikke fundet"
+                        )
+                    ansvarlig_medarbejder, ansvarlig_org = result
+
                     opgave_handler.opret_opgave_på_skema_30(
                         borger,
                         fødselsdato,
