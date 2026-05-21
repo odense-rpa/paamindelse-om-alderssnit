@@ -158,7 +158,7 @@ async def process_workqueue(workqueue):
                 
 
                 if alderssnit in ("15.5", "17", "18"):
-                    result = _find_organisation(referencer, godkendte_organisationer, type="30" if alderssnit=="30" else "")
+                    result = _find_organisation(referencer, godkendte_organisationer, type="")
                     if not result:
                         raise Exception(
                             "Ansvarlig medarbejder eller organisation ikke fundet"
