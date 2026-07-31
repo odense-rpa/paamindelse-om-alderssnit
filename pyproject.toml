@@ -18,7 +18,7 @@ dev = [
 ]
 
 [tool.uv.sources]
-kmd-nexus-client = { git = "https://github.com/odense-rpa/nexus-client" }
+kmd-nexus-client = { git = "https://github.com/odense-rpa/nexus-client.git", rev = "a93da4866c98bc6e8605989359b2db69f8bb5bdb" }
 automation-server-client = { git = "https://github.com/odense-rpa/automation-server-client" }
 odk-tools = { git = "https://github.com/odense-rpa/odk-tools" }
 nexus-database-client = { git = "https://github.com/odense-rpa/nexus-database-client.git" }
